@@ -1,0 +1,13 @@
+name: file_parser
+description: A file parser.
+version: 1.0.0
+repository: https://github.com/javaddict/file_parser
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+
+dev_dependencies:
+  lints:
+  test:
