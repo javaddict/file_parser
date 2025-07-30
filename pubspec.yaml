@@ -7,7 +7,10 @@ environment:
   sdk: ^3.8.1
 
 dependencies:
+  logger:
 
 dev_dependencies:
+  dart_cli:
+    git: https://github.com/javaddict/dart_cli.git
   lints:
   test:
