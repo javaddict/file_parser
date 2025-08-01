@@ -55,7 +55,7 @@ Future<void> _parseStream(Stream<String> source, LineBlock root) async {
   }
   dataSource.done = true;
   dataSource.getNewLine().complete(false);
-  await parsing;
+  (await parsing)!.call();
 }
 
 Future<void> parseStream(
@@ -84,7 +84,9 @@ typedef MatchHandler =
       String line,
       Object matchResult,
     );
-typedef ContentHandler = void Function(List<String> lines, int occurance);
+typedef CommitFunction = void Function();
+typedef ContentHandler =
+    CommitFunction Function(List<String> lines, int occurance);
 
 abstract class Matcher {
   final String name;
@@ -219,6 +221,7 @@ class LineBlock {
   int _lLN = 0;
   final _rawLines = <String>[];
   final _blockLines = <String>[];
+  final _nestedCommits = <CommitFunction>[];
 
   int _usageCount = 0;
   late final _DataSource _dataSource;
@@ -314,16 +317,24 @@ class LineBlock {
 
   bool get _hasEndingCondition => _tail.isNotEmpty || lineCount != null;
 
-  void _finish() {
-    _usageCount++;
-    action?.call(_blockLines, _usageCount);
+  CommitFunction _finish() {
+    final myCommit = action?.call(_blockLines.toList(), _usageCount + 1);
+    final nestedCommits = _nestedCommits.toList();
     _reset();
+    return () {
+      for (final nestedCommit in nestedCommits) {
+        nestedCommit();
+      }
+      myCommit?.call();
+      _usageCount++;
+    };
   }
 
-  void _finishAtPreviousLine() {
-    _finish();
+  CommitFunction _finishAtPreviousLine() {
+    final cf = _finish();
     _dataSource.buffer.insert(0, _rawLines.last);
     _dataSource.gLN--;
+    return cf;
   }
 
   void _fallback() {
@@ -336,18 +347,18 @@ class LineBlock {
     _lLN = 0;
     _rawLines.clear();
     _blockLines.clear();
+    _nestedCommits.clear();
   }
 
-  Future<bool> _parse() async {
+  Future<CommitFunction?> _parse() async {
     while (true) {
       if (_dataSource.buffer.isEmpty) {
         if (_dataSource.done || !await _dataSource.getNewLine().future) {
           if (_hasEndingCondition) {
             _fallback();
-            return false;
+            return null;
           } else {
-            _finish();
-            return true;
+            return _finish();
           }
         }
       }
@@ -359,10 +370,14 @@ class LineBlock {
             continue;
           case _NextMove.stopWithSuccess:
             _logger.d('$name stopped with success');
-            return true;
+            return _finish();
+          case _NextMove.stopWithSuccessExceptTheLastLine:
+            _logger.d('$name stopped with success except the last line');
+            return _finishAtPreviousLine();
           case _NextMove.stopWithFailure:
             _logger.d('$name stopped with failure');
-            return false;
+            _fallback();
+            return null;
         }
       }
     }
@@ -374,7 +389,9 @@ class LineBlock {
         final lineBlock = _nested;
         if (lineBlock._usable) {
           _logger.d('$name trying ${lineBlock.name}');
-          if (await lineBlock._parse()) {
+          final cf = await lineBlock._parse();
+          if (cf != null) {
+            _nestedCommits.add(cf);
             return _NextMove.expectMore;
           }
         }
@@ -384,7 +401,9 @@ class LineBlock {
         for (final lineBlock in lineBlocks) {
           if (lineBlock._usable) {
             _logger.d('$name trying ${lineBlock.name}');
-            if (await lineBlock._parse()) {
+            final cf = await lineBlock._parse();
+            if (cf != null) {
+              _nestedCommits.add(cf);
               return _NextMove.expectMore;
             }
           }
@@ -394,7 +413,9 @@ class LineBlock {
         for (final lineBlock in lineBlocks) {
           if (lineBlock._usable) {
             _logger.d('$name trying ${lineBlock.name}');
-            if (await lineBlock._parse()) {
+            final cf = await lineBlock._parse();
+            if (cf != null) {
+              _nestedCommits.add(cf);
               return _NextMove.expectMore;
             } else {
               break;
@@ -421,7 +442,6 @@ class LineBlock {
         if (name == '__root__') {
           return _NextMove.expectMore;
         }
-        _fallback();
         return _NextMove.stopWithFailure;
       }
     } else {
@@ -430,7 +450,6 @@ class LineBlock {
         if (m != null) {
           _blockLines.add(line);
           m.handleMatch();
-          _finish();
           return _NextMove.stopWithSuccess;
         }
       }
@@ -438,7 +457,6 @@ class LineBlock {
       if (m == null) {
         if (_hasEndingCondition) {
           if (tightlyCoupled) {
-            _fallback();
             return _NextMove.stopWithFailure;
           } else {
             return _NextMove.expectMore;
@@ -447,8 +465,7 @@ class LineBlock {
           if (name == '__root__') {
             return _NextMove.expectMore;
           }
-          _finishAtPreviousLine();
-          return _NextMove.stopWithSuccess;
+          return _NextMove.stopWithSuccessExceptTheLastLine;
         }
       }
     }
@@ -458,7 +475,6 @@ class LineBlock {
 
     if (lineCount != null) {
       if (_lLN == lineCount) {
-        _finish();
         return _NextMove.stopWithSuccess;
       }
     }
@@ -486,4 +502,9 @@ extension _StreamListIntExt on Stream<List<int>> {
       transform(utf8.decoder).transform(const LineSplitter());
 }
 
-enum _NextMove { expectMore, stopWithSuccess, stopWithFailure }
+enum _NextMove {
+  expectMore,
+  stopWithSuccess,
+  stopWithSuccessExceptTheLastLine,
+  stopWithFailure,
+}

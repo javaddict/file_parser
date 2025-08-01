@@ -50,13 +50,11 @@ void main() {
             head: Pattern('nested_head'),
             body: Pattern('nested_body'),
             tail: Pattern('nested_tail'),
-            action: (lines, _) {
-              nestedOutput.addAll(lines);
-            },
+            action: (lines, _) =>
+                () => nestedOutput.addAll(lines),
           ),
-          action: (lines, _) {
-            output.addAll(lines);
-          },
+          action: (lines, _) =>
+              () => output.addAll(lines),
         ),
       );
       expect(output, [
@@ -88,13 +86,11 @@ void main() {
             head: Pattern('nested_head'),
             body: Pattern('nested_body'),
             tail: Pattern('nested_tail'),
-            action: (lines, _) {
-              nestedOutput.addAll(lines);
-            },
+            action: (lines, _) =>
+                () => nestedOutput.addAll(lines),
           ),
-          action: (lines, _) {
-            output.addAll(lines);
-          },
+          action: (lines, _) =>
+              () => output.addAll(lines),
         ),
       );
       expect(output, [
@@ -120,6 +116,123 @@ void main() {
         '     nested_body2',
         '     nested_body2',
         '<<<< nested_tail2',
+      ]);
+    });
+  });
+
+  group('nested should be nested', () {
+    test('outer should match before inner can match', () async {
+      final input = createTempFile()
+        ..write('''
+...
+<< head1
+   body1
+   body1
+   body1
+<<<< nested_head1
+     nested_body1
+     nested_body1
+     nested_body1
+<<<< nested_tail1
+   ...
+<< tail1
+...
+<< head2
+   body2
+   body2
+   body2
+<<<< nested_head2
+     nested_body2
+     nested_body2
+     nested_body2
+<<<< nested_tail2
+<< tail2
+...
+''');
+      final output = <String>[];
+      final nestedOutput = <String>[];
+      await parseFile(
+        File(input),
+        define: LineBlock(
+          tightlyCoupled: true,
+          head: Pattern('head'),
+          body: Pattern('body'),
+          tail: Pattern('tail'),
+          nested: LineBlock(
+            head: Pattern('nested_head'),
+            body: Pattern('nested_body'),
+            tail: Pattern('nested_tail'),
+            action: (lines, _) =>
+                () => nestedOutput.addAll(lines),
+          ),
+          action: (lines, _) =>
+              () => output.addAll(lines),
+        ),
+      );
+      expect(output, [
+        '<< head2',
+        '   body2',
+        '   body2',
+        '   body2',
+        '<< tail2',
+      ]);
+      expect(nestedOutput, [
+        '<<<< nested_head2',
+        '     nested_body2',
+        '     nested_body2',
+        '     nested_body2',
+        '<<<< nested_tail2',
+      ]);
+    });
+
+    test('headless outer', () async {
+      final input = createTempFile()
+        ..write('''
+...
+<<<< nested_head1
+     nested_body1
+     nested_body1
+     nested_body1
+<<<< nested_tail1
+   body1
+   body1
+   body1
+   body1
+<< tail1
+...
+''');
+      final output = <String>[];
+      final nestedOutput = <String>[];
+      await parseFile(
+        File(input),
+        define: LineBlock(
+          tightlyCoupled: true,
+          body: Pattern('body'),
+          tail: Pattern('tail'),
+          nested: LineBlock(
+            head: Pattern('nested_head'),
+            body: Pattern('nested_body'),
+            tail: Pattern('nested_tail'),
+            action: (lines, _) =>
+                () => nestedOutput.addAll(lines),
+          ),
+          action: (lines, _) =>
+              () => output.addAll(lines),
+        ),
+      );
+      expect(output, [
+        '   body1',
+        '   body1',
+        '   body1',
+        '   body1',
+        '<< tail1',
+      ]);
+      expect(nestedOutput, [
+        '<<<< nested_head1',
+        '     nested_body1',
+        '     nested_body1',
+        '     nested_body1',
+        '<<<< nested_tail1',
       ]);
     });
   });
