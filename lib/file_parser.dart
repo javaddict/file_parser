@@ -32,14 +32,37 @@ class LineBlockParsingException {
 
 class _DataSource {
   final buffer = <String>[];
-  int gLN = 0;
+  int _index = 0;
+  int gLN = 1;
   bool done = false;
   Completer<bool> _newLineCompleter = Completer<bool>();
+
+  bool get isEmpty => _index >= buffer.length;
+
   Completer<bool> getNewLine() {
     if (_newLineCompleter.isCompleted) {
       _newLineCompleter = Completer<bool>();
     }
     return _newLineCompleter;
+  }
+
+  (int, String) getNextLine() {
+    assert(buffer.isNotEmpty);
+    final v = (gLN, buffer[_index]);
+    _index++;
+    gLN++;
+    return v;
+  }
+
+  void reverse(int lines) {
+    _index -= lines;
+    gLN -= lines;
+    assert(_index >= 0);
+  }
+
+  void dropBuffer() {
+    buffer.removeRange(0, _index);
+    _index = 0;
   }
 }
 
@@ -214,12 +237,12 @@ class LineBlock {
 
   // Specify that if we allow other lines been mixed in between this block when
   // there is an ending condition
-  final bool tightlyCoupled;
+  final bool strict;
 
   final ContentHandler? action;
 
   int _lLN = 0;
-  final _rawLines = <String>[];
+  int _sgLN = 0;
   final _blockLines = <String>[];
   final _nestedCommits = <CommitFunction>[];
 
@@ -252,7 +275,7 @@ class LineBlock {
     this.priority = 1,
     this.lineCount,
     this.usageLimit,
-    this.tightlyCoupled = false,
+    this.strict = false,
     this.action,
     Object? nested,
   }) : name = name ?? _generateName('Parser'),
@@ -317,10 +340,9 @@ class LineBlock {
 
   bool get _hasEndingCondition => _tail.isNotEmpty || lineCount != null;
 
-  CommitFunction _finish() {
+  CommitFunction _getCommit() {
     final myCommit = action?.call(_blockLines.toList(), _usageCount + 1);
     final nestedCommits = _nestedCommits.toList();
-    _reset();
     return () {
       for (final nestedCommit in nestedCommits) {
         nestedCommit();
@@ -330,53 +352,53 @@ class LineBlock {
     };
   }
 
-  CommitFunction _finishAtPreviousLine() {
-    final cf = _finish();
-    _dataSource.buffer.insert(0, _rawLines.last);
-    _dataSource.gLN--;
-    return cf;
-  }
-
-  void _fallback() {
-    _dataSource.buffer.insertAll(0, _rawLines);
-    _dataSource.gLN -= _rawLines.length;
-    _reset();
-  }
-
   void _reset() {
     _lLN = 0;
-    _rawLines.clear();
     _blockLines.clear();
     _nestedCommits.clear();
   }
 
   Future<CommitFunction?> _parse() async {
+    _sgLN = _dataSource.gLN;
     while (true) {
-      if (_dataSource.buffer.isEmpty) {
+      if (_dataSource.isEmpty) {
         if (_dataSource.done || !await _dataSource.getNewLine().future) {
           if (_hasEndingCondition) {
-            _fallback();
+            _dataSource.reverse(_dataSource.gLN - _sgLN);
+            _reset();
             return null;
           } else {
-            return _finish();
+            final commit = _getCommit();
+            _reset();
+            return commit;
           }
         }
       }
 
-      while (_dataSource.buffer.isNotEmpty) {
+      while (!_dataSource.isEmpty) {
         switch (await _parseNextLine()) {
           case _NextMove.expectMore:
             _logger.d('$name expecting more');
             continue;
+          case _NextMove.dropBufferThenExpectMore:
+            _logger.d('$name dropping buffer then expecting more');
+            _dataSource.dropBuffer();
+            continue;
           case _NextMove.stopWithSuccess:
             _logger.d('$name stopped with success');
-            return _finish();
+            final commit = _getCommit();
+            _reset();
+            return commit;
           case _NextMove.stopWithSuccessExceptTheLastLine:
             _logger.d('$name stopped with success except the last line');
-            return _finishAtPreviousLine();
+            _dataSource.reverse(1);
+            final commit = _getCommit();
+            _reset();
+            return commit;
           case _NextMove.stopWithFailure:
             _logger.d('$name stopped with failure');
-            _fallback();
+            _dataSource.reverse(_dataSource.gLN - _sgLN);
+            _reset();
             return null;
         }
       }
@@ -392,7 +414,9 @@ class LineBlock {
           final cf = await lineBlock._parse();
           if (cf != null) {
             _nestedCommits.add(cf);
-            return _NextMove.expectMore;
+            return name == '__root__'
+                ? _NextMove.dropBufferThenExpectMore
+                : _NextMove.expectMore;
           }
         }
       } else if (_nested is Set<LineBlock>) {
@@ -404,7 +428,9 @@ class LineBlock {
             final cf = await lineBlock._parse();
             if (cf != null) {
               _nestedCommits.add(cf);
-              return _NextMove.expectMore;
+              return name == '__root__'
+                  ? _NextMove.dropBufferThenExpectMore
+                  : _NextMove.expectMore;
             }
           }
         }
@@ -416,7 +442,9 @@ class LineBlock {
             final cf = await lineBlock._parse();
             if (cf != null) {
               _nestedCommits.add(cf);
-              return _NextMove.expectMore;
+              return name == '__root__'
+                  ? _NextMove.dropBufferThenExpectMore
+                  : _NextMove.expectMore;
             } else {
               break;
             }
@@ -425,9 +453,7 @@ class LineBlock {
       }
     }
 
-    final line = _dataSource.buffer.removeAt(0);
-    final gLN = _dataSource.gLN++;
-    _rawLines.add(line);
+    final (gLN, line) = _dataSource.getNextLine();
 
     _lLN++;
     Matcher? m;
@@ -456,7 +482,7 @@ class LineBlock {
       m ??= _findMatch(_body, gLN, _lLN, line);
       if (m == null) {
         if (_hasEndingCondition) {
-          if (tightlyCoupled) {
+          if (strict) {
             return _NextMove.stopWithFailure;
           } else {
             return _NextMove.expectMore;
@@ -504,6 +530,7 @@ extension _StreamListIntExt on Stream<List<int>> {
 
 enum _NextMove {
   expectMore,
+  dropBufferThenExpectMore,
   stopWithSuccess,
   stopWithSuccessExceptTheLastLine,
   stopWithFailure,
